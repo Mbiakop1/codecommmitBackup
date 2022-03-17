@@ -1,0 +1,175 @@
+# Copyright 2012-2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Parameters:
+  CodeCommitBackupsScriptsS3Bucket:
+    Type: "String"
+    Description: "CodeCommit backup scripts"
+  CodeCommitBackupsS3Bucket:
+    Type: "String"
+    Description: "S3 Bucket for CodeCommit repository backups"
+  BackupSchedule:
+    Type: "String"
+    Description: "Backup schedule as a cron expression"
+    Default: "cron(0 2 * * ? *)"
+  BackupScriptsFile:
+    Type: "String"
+    Description: "Compressed S3 file containing backup scripts"
+    Default: "codecommit_backup_scripts.zip"
+Resources:
+  CodeCommitBackupLambdaRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies: 
+        - 
+          PolicyName: "lambdaexecute"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Action: 
+                  - "logs:*"
+                Resource: "arn:aws:logs:*:*:*"
+              - 
+                Effect: "Allow"
+                Action: 
+                  - "s3:GetObject"
+                  - "s3:GPutbject"
+                Resource: "arn:aws:s3:::*"
+        - 
+          PolicyName: "codebuild"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Action: 
+                  - "codebuild:StartBuild"
+                Resource: !GetAtt CodeBuildProject.Arn
+  CodeCommitBackupLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: CodeCommitBackupLambda
+      Handler: codecommit_backup_trigger_lambda.handler
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 30
+      Role: !GetAtt CodeCommitBackupLambdaRole.Arn
+  CodeCommitBackupScheduledRule: 
+    Type: "AWS::Events::Rule"
+    Properties: 
+      Description: "Scheduled rule for CodeCommit backups"
+      ScheduleExpression: !Ref BackupSchedule
+      State: "ENABLED"
+      Targets: 
+        - 
+          Arn: 
+            Fn::GetAtt: 
+              - "CodeCommitBackupLambda"
+              - "Arn"
+          Id: "CodeCommitBackupLambda"
+  PermissionForEventsToInvokeLambda: 
+    Type: "AWS::Lambda::Permission"
+    Properties: 
+      FunctionName: 
+        Ref: "CodeCommitBackupLambda"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+  CodeBuildProjectRole:
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "codebuild.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies: 
+        - 
+          PolicyName: "codecommit-readonly"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Action:
+                  - "codecommit:BatchGet*"
+                  - "codecommit:Get*"
+                  - "codecommit:Describe*"
+                  - "codecommit:List*"
+                  - "codecommit:GitPull"
+                Resource: "*"
+        - 
+          PolicyName: "logs"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+        - 
+          PolicyName: "s3-artifacts"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                Resource:
+                  - !Sub "arn:aws:s3:::${CodeCommitBackupsScriptsS3Bucket}/*"
+        - 
+          PolicyName: "s3-backup"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Action: 
+                  - "s3:putObject"
+                Resource:
+                  - !Sub "arn:aws:s3:::${CodeCommitBackupsS3Bucket}/*"
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: CodeCommitBackup
+      Description: CodeBuild will backup all CodeCommit repo in this region
+      ServiceRole: !GetAtt CodeBuildProjectRole.Arn
+      Artifacts:
+        Type: no_artifacts
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/python:3.5.2
+        EnvironmentVariables: 
+          - 
+            Name: CodeCommitBackupsS3Bucket
+            Value: !Ref CodeCommitBackupsS3Bucket
+      Source:
+        Location: !Sub "arn:aws:s3:::${CodeCommitBackupsScriptsS3Bucket}/${BackupScriptsFile}"
+        Type: S3
+      TimeoutInMinutes: 60

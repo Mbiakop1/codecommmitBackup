@@ -1,0 +1,16 @@
+# Copyright 2012-2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+version: 0.2
+
+phases:
+
+  install:
+    commands:
+      - apt-get update -y
+      - apt-get install -y jq
+
+  build:
+    commands:
+      - chmod +x backup_codecommit.sh
+      - ./backup_codecommit.sh
